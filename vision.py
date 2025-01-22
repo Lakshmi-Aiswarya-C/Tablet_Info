@@ -1,19 +1,48 @@
+import pyttsx3
 from dotenv import load_dotenv
 import os
 import streamlit as st
 from PIL import Image
 import google.generativeai as genai
+import threading
+
+# Initialize the pyttsx3 engine
+engine = pyttsx3.init()
+lock = threading.Lock()  # Lock to synchronize access to the pyttsx3 engine
+
+# Function to convert text to speech in a separate thread
+def text_to_speech_thread(text, voice_gender):
+    with lock:  # Ensure only one thread accesses the engine at a time
+        voices = engine.getProperty("voices")
+        if voice_gender == "Male":
+            engine.setProperty("voice", voices[0].id)  # Male voice
+        else:
+            engine.setProperty("voice", voices[1].id)  # Female voice
+        engine.say(text)
+        engine.runAndWait()
+
+# Function to start text-to-speech
+def start_speech(text, voice_gender):
+    # Stop any ongoing speech
+    if st.session_state.speech_thread and st.session_state.speech_thread.is_alive():
+        with lock:
+            engine.stop()
+        st.session_state.speech_thread.join()
+
+    # Start a new speech thread
+    st.session_state.speech_thread = threading.Thread(
+        target=text_to_speech_thread, args=(text, voice_gender)
+    )
+    st.session_state.speech_thread.start()
 
 # Load environment variables
 load_dotenv()
-
-# Configure the Gemini API with your API key
 os.getenv("GOOGLE_API_KEY")
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 # Function to generate a response from the Gemini model
 def get_gemini_response(input, image, prompt):
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel("gemini-1.5-flash")
     response = model.generate_content([input, image[0], prompt])
     return response.text
 
@@ -24,18 +53,19 @@ def input_image_setup(uploaded_file):
         image_parts = [
             {
                 "mime_type": uploaded_file.type,
-                "data": bytes_data
+                "data": bytes_data,
             }
         ]
         return image_parts
     else:
         raise FileNotFoundError("No file uploaded")
 
-# Initialize the Streamlit app
+# Streamlit app initialization
 st.set_page_config(page_title="Tablet Info Summarizer", layout="centered", page_icon="💊")
 
 # Add custom CSS for styling
-st.markdown("""
+st.markdown(
+    """
     <style>
         body {
             font-family: 'Poppins', sans-serif;
@@ -53,79 +83,78 @@ st.markdown("""
             font-size: 1.5em;
             color: #00ffcc;
         }
-        .file-uploader {
-            background-color: #343a40;
-            padding: 10px;
-            border-radius: 5px;
-        }
-        .button {
-            background-color: #00adb5;
-            color: #ffffff;
-            font-size: 1.2em;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            text-align: center;
-            margin-top: 10px;
-        }
-        .button:hover {
-            background-color: #005f73;
-        }
-        .error {
-            color: #ff6f61;
-        }
-        .warning {
-            color: #ffd700;
-        }
     </style>
-""", unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True,
+)
 
 # Header
 st.markdown("<div class='header'>Tablet Info Summarizer</div>", unsafe_allow_html=True)
-st.markdown("<div class='subheader'>Upload a tablet image and get detailed information</div>", unsafe_allow_html=True)
+st.markdown(
+    "<div class='subheader'>Upload a tablet image and get detailed information</div>",
+    unsafe_allow_html=True,
+)
+
+# Initialize session state for the response text
+if "response_text" not in st.session_state:
+    st.session_state.response_text = ""
+
+# Initialize session state for voice options
+if "speech_thread" not in st.session_state:
+    st.session_state.speech_thread = None
 
 # User inputs
-input = st.text_input("Enter Additional Details (Optional):", key="input", help="Add any specific details or context about the tablet.")
-uploaded_file = st.file_uploader("Upload Tablet Image (JPG, JPEG, PNG):", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
+input = st.text_input(
+    "Enter Additional Details (Optional):",
+    key="input",
+    help="Add any specific details or context about the tablet.",
+)
+uploaded_file = st.file_uploader(
+    "Upload Tablet Image (JPG, JPEG, PNG):", type=["jpg", "jpeg", "png"], label_visibility="collapsed"
+)
 
 # Display uploaded image
-image = ""   
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Tablet Image", use_container_width=True)
+    st.image(image, caption="Uploaded Tablet Image")
 
 # Analyze tablet info button
-submit = st.button("Analyze Tablet Info", use_container_width=True)
-
-# Custom prompt for the tablet information summary
-input_prompt = """
-               You are an expert in understanding pharmaceutical information.
-               You will receive input images of tablets with their labels.
-               Based on the input image, you will:
-               1. Identify the name of the tablet from the label.
-               2. Search for its uses, side effects, precautions, dosage instructions, and interactions.
-               3. Provide a concise and accurate summary of the findings.
-               Ensure that the information is up-to-date and sourced from reliable medical websites.
-               """
-
-# When the analyze button is clicked
-if submit:
+if st.button("Analyze Tablet Info", use_container_width=True):
     if uploaded_file is not None:
         try:
             # Prepare the image data for input to the Gemini model
             image_data = input_image_setup(uploaded_file)
 
+            # Custom prompt for the tablet information summary
+            input_prompt = """
+            You are an expert in understanding pharmaceutical information.
+            You will receive input images of tablets with their labels.
+            Based on the input image, you will:
+            1. Identify the name of the tablet from the label.
+            2. Search for its uses, side effects, precautions, dosage instructions, and interactions.
+            3. Provide a concise and accurate summary of the findings.
+            Ensure that the information is up-to-date and sourced from reliable medical websites.
+            """
+
             # Combine the extracted text with the user's input prompt
             complete_prompt = f"{input_prompt}\n\nTablet Details: {input}\n\nSummary:"
 
             # Process the tablet image with the Gemini model
-            response = get_gemini_response(complete_prompt, image_data, input)
+            st.session_state.response_text = get_gemini_response(complete_prompt, image_data, input)
 
-            # Show the summary to the user
-            st.markdown("<h3 style='color:#ffd700;'>Tablet Information Summary</h3>", unsafe_allow_html=True)
-            st.success(response)
         except Exception as e:
-            st.markdown(f"<div class='error'>Error processing the tablet info: {e}</div>", unsafe_allow_html=True)
+            st.error(f"Error processing the tablet info: {e}")
     else:
-        st.markdown("<div class='warning'>Please upload a tablet image to proceed.</div>", unsafe_allow_html=True)
+        st.warning("Please upload a tablet image to proceed.")
+
+# Display the response text if available
+if st.session_state.response_text:
+    st.markdown("<h3 style='color:#ffd700;'>Tablet Information Summary</h3>", unsafe_allow_html=True)
+    st.success(st.session_state.response_text)
+
+    # Voice options
+    voice_gender = st.radio("Select Voice Gender:", ["Male", "Female"], index=0, key="voice_gender")
+
+    # Add "Voice" button
+    if st.button("Voice"):
+        start_speech(st.session_state.response_text, voice_gender)

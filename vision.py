@@ -5,7 +5,7 @@ import streamlit as st
 from PIL import Image
 import google.generativeai as genai
 
-@@ -31,84 +31,101 @@ def input_image_setup(uploaded_file):
+def input_image_setup(uploaded_file):
     else:
         raise FileNotFoundError("No file uploaded")
 

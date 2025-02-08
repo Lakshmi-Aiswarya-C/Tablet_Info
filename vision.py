@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 import os
 import streamlit as st
+import requests
 from PIL import Image
 import google.generativeai as genai
 
@@ -8,12 +9,17 @@ import google.generativeai as genai
 load_dotenv()
 
 # Configure the Gemini API with your API key
-os.getenv("GOOGLE_API_KEY")
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+
+# API Endpoints
+RXNORM_API_URL = "https://rxnav.nlm.nih.gov/REST/rxcui.json?name={}"
+FDA_API_URL = "https://api.fda.gov/drug/label.json?search=openfda.brand_name:{}"
+MEDLINEPLUS_API_URL = "https://wsearch.nlm.nih.gov/ws/query?db=healthTopics&term={}"
+WHO_EML_URL = "https://www.who.int/medicines/publications/essentialmedicines/en/"  # Static source
 
 # Function to generate a response from the Gemini model
 def get_gemini_response(input, image, prompt):
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel("gemini-1.5-flash")
     response = model.generate_content([input, image[0], prompt])
     return response.text
 
@@ -21,111 +27,100 @@ def get_gemini_response(input, image, prompt):
 def input_image_setup(uploaded_file):
     if uploaded_file is not None:
         bytes_data = uploaded_file.getvalue()
-        image_parts = [
-            {
-                "mime_type": uploaded_file.type,
-                "data": bytes_data
-            }
-        ]
+        image_parts = [{"mime_type": uploaded_file.type, "data": bytes_data}]
         return image_parts
     else:
         raise FileNotFoundError("No file uploaded")
 
-# Initialize the Streamlit app
+# Function to fetch RxNorm ID for the drug
+def get_rxnorm_id(drug_name):
+    response = requests.get(RXNORM_API_URL.format(drug_name))
+    if response.status_code == 200:
+        data = response.json()
+        if "idGroup" in data and "rxnormId" in data["idGroup"]:
+            return data["idGroup"]["rxnormId"][0]
+    return None
+
+# Function to fetch FDA drug information
+def get_fda_drug_info(drug_name):
+    response = requests.get(FDA_API_URL.format(drug_name))
+    if response.status_code == 200:
+        data = response.json()
+        if "results" in data:
+            return data["results"][0]["description"]
+    return "No FDA-approved information available."
+
+# Function to fetch MedlinePlus drug information
+def get_medlineplus_info(drug_name):
+    response = requests.get(MEDLINEPLUS_API_URL.format(drug_name))
+    if response.status_code == 200:
+        return "Drug details available on MedlinePlus."
+    return "No MedlinePlus data found."
+
+# Streamlit UI
 st.set_page_config(page_title="Tablet Info Summarizer", layout="centered", page_icon="💊")
 
-# Add custom CSS for styling
-st.markdown("""
+# UI Styling
+st.markdown(
+    """
     <style>
-        body {
-            font-family: 'Poppins', sans-serif;
-            background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
-            color: #ffffff;
-        }
-        .header {
-            text-align: center;
-            font-size: 2.5em;
-            margin-bottom: 20px;
-            color: #ffd700;
-        }
-        .subheader {
-            text-align: center;
-            font-size: 1.5em;
-            color: #00ffcc;
-        }
-        .file-uploader {
-            background-color: #343a40;
-            padding: 10px;
-            border-radius: 5px;
-        }
-        .button {
-            background-color: #00adb5;
-            color: #ffffff;
-            font-size: 1.2em;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            text-align: center;
-            margin-top: 10px;
-        }
-        .button:hover {
-            background-color: #005f73;
-        }
-        .error {
-            color: #ff6f61;
-        }
-        .warning {
-            color: #ffd700;
-        }
+        .header {text-align: center; font-size: 2.5em; margin-bottom: 20px; color: #ffd700;}
+        .subheader {text-align: center; font-size: 1.5em; color: #00ffcc;}
+        .warning {color: #ffd700;}
     </style>
-""", unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True,
+)
 
 # Header
 st.markdown("<div class='header'>Tablet Info Summarizer</div>", unsafe_allow_html=True)
-st.markdown("<div class='subheader'>Upload a tablet image and get detailed information</div>", unsafe_allow_html=True)
+st.markdown("<div class='subheader'>Upload a tablet image to get medical details</div>", unsafe_allow_html=True)
 
-# User inputs
-input = st.text_input("Enter Additional Details (Optional):", key="input", help="Add any specific details or context about the tablet.")
-uploaded_file = st.file_uploader("Upload Tablet Image (JPG, JPEG, PNG):", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
+# User Inputs
+input_text = st.text_input("Enter Additional Details (Optional):", key="input", help="Add specific details about the tablet.")
+uploaded_file = st.file_uploader("Upload Tablet Image (JPG, JPEG, PNG):", type=["jpg", "jpeg", "png"])
 
 # Display uploaded image
-image = ""   
-if uploaded_file is not None:
+if uploaded_file:
     image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Tablet Image", use_container_width=True)
+    st.image(image, caption="Uploaded Tablet Image", use_column_width=True)
 
-# Analyze tablet info button
-submit = st.button("Analyze Tablet Info", use_container_width=True)
-
-# Custom prompt for the tablet information summary
-input_prompt = """
-               You are an expert in understanding pharmaceutical information.
-               You will receive input images of tablets with their labels.
-               Based on the input image, you will:
-               1. Identify the name of the tablet from the label.
-               2. Search for its uses, side effects, precautions, dosage instructions, and interactions.
-               3. Provide a concise and accurate summary of the findings.
-               Ensure that the information is up-to-date and sourced from reliable medical websites.
-               """
-
-# When the analyze button is clicked
-if submit:
-    if uploaded_file is not None:
+# Analyze Button
+if st.button("Analyze Tablet Info", use_container_width=True):
+    if uploaded_file:
         try:
-            # Prepare the image data for input to the Gemini model
+            # Prepare image for Gemini model
             image_data = input_image_setup(uploaded_file)
 
-            # Combine the extracted text with the user's input prompt
-            complete_prompt = f"{input_prompt}\n\nTablet Details: {input}\n\nSummary:"
+            # Custom prompt for Gemini to extract tablet name
+            input_prompt = """
+            Identify the tablet name from the image label.
+            Example: If the label says "Paracetamol", extract "Paracetamol".
+            """
 
-            # Process the tablet image with the Gemini model
-            response = get_gemini_response(complete_prompt, image_data, input)
+            # Get extracted tablet name
+            tablet_name = get_gemini_response(input_prompt, image_data, input_text).strip()
 
-            # Show the summary to the user
-            st.markdown("<h3 style='color:#ffd700;'>Tablet Information Summary</h3>", unsafe_allow_html=True)
-            st.success(response)
+            if tablet_name:
+                # Fetch RxNorm ID
+                rxnorm_id = get_rxnorm_id(tablet_name)
+
+                # Get additional medical data
+                fda_info = get_fda_drug_info(tablet_name)
+                medline_info = get_medlineplus_info(tablet_name)
+
+                # Display tablet info
+                st.markdown("<h3 style='color:#ffd700;'>Tablet Information Summary</h3>", unsafe_allow_html=True)
+                st.success(f"**Tablet Name:** {tablet_name}")
+                st.info(f"**RxNorm ID:** {rxnorm_id if rxnorm_id else 'Not Available'}")
+                st.info(f"**FDA Information:** {fda_info}")
+                st.info(f"**MedlinePlus Information:** {medline_info}")
+                st.info(f"**WHO Essential Medicines:** Check [WHO EML]({WHO_EML_URL}) for further details.")
+
+            else:
+                st.warning("Tablet name could not be extracted. Please try again.")
+
         except Exception as e:
-            st.markdown(f"<div class='error'>Error processing the tablet info: {e}</div>", unsafe_allow_html=True)
+            st.error(f"Error processing tablet info: {e}")
     else:
-        st.markdown("<div class='warning'>Please upload a tablet image to proceed.</div>", unsafe_allow_html=True)
+        st.warning("Please upload a tablet image to proceed.")
